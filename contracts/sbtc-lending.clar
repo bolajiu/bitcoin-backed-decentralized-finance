@@ -265,3 +265,97 @@
     )
   )
 )
+
+;; Interest calculation helpers
+(define-private (calculate-interest (principal uint) (interest-rate uint) (blocks uint))
+  ;; Interest = principal * rate * blocks / 10000 / 10000
+  ;; Rate is in basis points (0.01%), so we divide by 10000
+  ;; We divide by another 10000 for scaling purposes
+  (/ (* (* principal interest-rate) blocks) u10000 u10000)
+)
+
+(define-private (update-loan-interest (user principal))
+  (let (
+    (current-loan (map-get? user-loans { user: user }))
+  )
+    (match current-loan
+      loan 
+      (let (
+        (blocks-elapsed (- block-height (get last-interest-block loan)))
+        (new-interest (calculate-interest (get borrowed-amount loan) (var-get interest-rate-per-block) blocks-elapsed))
+        (updated-interest (+ (get interest-accumulated loan) new-interest))
+      )
+        (map-set user-loans 
+          { user: user }
+          {
+            borrowed-amount: (get borrowed-amount loan),
+            interest-accumulated: updated-interest,
+            last-interest-block: block-height,
+            liquidated: (get liquidated loan)
+          }
+        )
+        true
+      )
+      false
+    )
+  )
+)
+
+(define-public (update-global-interest)
+  (begin
+    (asserts! (var-get protocol-initialized) ERR-NOT-INITIALIZED)
+    (var-set last-block-interest-calculated block-height)
+    (ok true)
+  )
+)
+
+;; Loan functions
+(define-public (borrow (amount uint))
+  (begin
+    (asserts! (var-get protocol-initialized) ERR-NOT-INITIALIZED)
+    (asserts! (not (var-get protocol-paused)) ERR-PAUSED)
+    (asserts! (> amount u0) ERR-INVALID-AMOUNT)
+    
+    ;; Update interest on existing loan if any
+    (update-loan-interest tx-sender)
+    
+    (let (
+      (current-collateral (default-to { amount: u0 } (map-get? user-collateral { user: tx-sender })))
+      (current-loan (default-to { borrowed-amount: u0, interest-accumulated: u0, last-interest-block: block-height, liquidated: false } 
+                          (map-get? user-loans { user: tx-sender })))
+      (price-response (try! (get-sbtc-price)))
+    )
+      ;; Calculate collateral value
+      (let (
+        (collateral-value (* (get amount current-collateral) price-response))
+        (existing-debt (+ (get borrowed-amount current-loan) (get interest-accumulated current-loan)))
+        (new-total-debt (+ existing-debt amount))
+        (new-collateral-ratio (if (> new-total-debt u0)
+                               (/ (* collateral-value u100) new-total-debt)
+                               u0))
+      )
+        ;; Check collateral ratio
+        (asserts! (>= new-collateral-ratio (var-get minimum-collateral-ratio)) ERR-COLLATERAL-RATIO-TOO-LOW)
+        
+        ;; Update loan information
+        (map-set user-loans
+          { user: tx-sender }
+          {
+            borrowed-amount: (+ (get borrowed-amount current-loan) amount),
+            interest-accumulated: (get interest-accumulated current-loan),
+            last-interest-block: block-height,
+            liquidated: false
+          }
+        )
+        
+        ;; Update total borrowed
+        (var-set total-stablecoin-borrowed (+ (var-get total-stablecoin-borrowed) amount))
+        
+        ;; Transfer stablecoin to borrower
+        (as-contract
+          (contract-call? (var-get stablecoin-contract) transfer amount tx-sender tx-sender)
+        )
+      )
+    )
+  )
+)
