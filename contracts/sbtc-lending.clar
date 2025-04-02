@@ -359,3 +359,62 @@
     )
   )
 )
+
+(define-public (repay (amount uint))
+  (begin
+    (asserts! (var-get protocol-initialized) ERR-NOT-INITIALIZED)
+    (asserts! (not (var-get protocol-paused)) ERR-PAUSED)
+    (asserts! (> amount u0) ERR-INVALID-AMOUNT)
+    
+    ;; Update interest on existing loan
+    (update-loan-interest tx-sender)
+    
+    (let (
+      (current-loan (map-get? user-loans { user: tx-sender }))
+    )
+      (match current-loan
+        loan
+        (let (
+          (total-debt (+ (get borrowed-amount loan) (get interest-accumulated loan)))
+        )
+          ;; Check if repayment exceeds debt
+          (asserts! (<= amount total-debt) ERR-REPAY-EXCEEDS-DEBT)
+          
+          ;; Calculate how much of the payment goes to interest vs principal
+          (let (
+            (interest-payment (if (< (get interest-accumulated loan) amount) 
+                                 (get interest-accumulated loan)
+                                 amount))
+            (principal-payment (- amount interest-payment))
+            (new-interest-accumulated (- (get interest-accumulated loan) interest-payment))
+            (new-borrowed-amount (- (get borrowed-amount loan) principal-payment))
+          )
+            ;; Update loan information
+            (map-set user-loans
+              { user: tx-sender }
+              {
+                borrowed-amount: new-borrowed-amount,
+                interest-accumulated: new-interest-accumulated,
+                last-interest-block: block-height,
+                liquidated: false
+              }
+            )
+            
+            ;; Update total borrowed
+            (var-set total-stablecoin-borrowed (- (var-get total-stablecoin-borrowed) principal-payment))
+            
+            ;; Calculate protocol fee on interest
+            (let (
+              (protocol-fee-amount (/ (* interest-payment (var-get protocol-fee)) u100))
+              (user-transfer-amount (- amount protocol-fee-amount))
+            )
+              ;; Transfer stablecoin from user to contract
+              (contract-call? (var-get stablecoin-contract) transfer amount tx-sender (as-contract tx-sender))
+            )
+          )
+        )
+        ERR-LOAN-DOES-NOT-EXIST
+      )
+    )
+  )
+)
