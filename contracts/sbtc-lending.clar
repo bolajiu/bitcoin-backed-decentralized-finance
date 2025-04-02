@@ -521,3 +521,61 @@
     )
   )
 )
+
+;; Read-only functions for data access
+(define-read-only (get-user-collateral (user principal))
+  (default-to { amount: u0 } (map-get? user-collateral { user: user }))
+)
+
+(define-read-only (get-user-loan (user principal))
+  (map-get? user-loans { user: user })
+)
+
+(define-read-only (get-collateral-ratio (user principal))
+  (let (
+    (current-collateral (default-to { amount: u0 } (map-get? user-collateral { user: user })))
+    (current-loan (map-get? user-loans { user: user }))
+  )
+    (match current-loan
+      loan
+      (let (
+        (price-response (get-sbtc-price))
+      )
+        (match price-response
+          price
+          (let (
+            (collateral-value (* (get amount current-collateral) price))
+            (total-debt (+ (get borrowed-amount loan) (get interest-accumulated loan)))
+          )
+            (if (> total-debt u0)
+              (ok (/ (* collateral-value u100) total-debt))
+              (ok u0)
+            )
+          )
+          error (err error)
+        )
+      )
+      (err ERR-LOAN-DOES-NOT-EXIST)
+    )
+  )
+)
+
+(define-read-only (get-protocol-stats)
+  {
+    total-sbtc-locked: (var-get total-sbtc-locked),
+    total-stablecoin-borrowed: (var-get total-stablecoin-borrowed),
+    minimum-collateral-ratio: (var-get minimum-collateral-ratio),
+    liquidation-threshold: (var-get liquidation-threshold),
+    interest-rate-per-block: (var-get interest-rate-per-block),
+    protocol-paused: (var-get protocol-paused)
+  }
+)
+
+;; Test helper function - only available in dev environments
+(define-public (set-block-height (new-height uint))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-NOT-AUTHORIZED)
+    (print (tuple (new-height new-height)))
+    (ok true)
+  )
+)
