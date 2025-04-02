@@ -102,3 +102,80 @@
   (or (is-eq tx-sender CONTRACT-OWNER)
       (default-to false (get authorized bool (map-get? authorized-addresses { address: tx-sender }))))
 )
+
+(define-public (add-authorized-address (address principal))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-NOT-AUTHORIZED)
+    (ok (map-set authorized-addresses { address: address } { authorized: true }))
+  )
+)
+
+(define-public (remove-authorized-address (address principal))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-NOT-AUTHORIZED)
+    (ok (map-set authorized-addresses { address: address } { authorized: false }))
+  )
+)
+
+;; Protocol pause controls for emergency situations
+(define-public (pause-protocol)
+  (begin
+    (asserts! (is-authorized) ERR-NOT-AUTHORIZED)
+    (ok (var-set protocol-paused true))
+  )
+)
+
+(define-public (unpause-protocol)
+  (begin
+    (asserts! (is-authorized) ERR-NOT-AUTHORIZED)
+    (ok (var-set protocol-paused false))
+  )
+)
+
+;; Parameter management functions - only authorized addresses can update these
+(define-public (update-minimum-collateral-ratio (new-ratio uint))
+  (begin
+    (asserts! (is-authorized) ERR-NOT-AUTHORIZED)
+    (ok (var-set minimum-collateral-ratio new-ratio))
+  )
+)
+
+(define-public (update-liquidation-threshold (new-threshold uint))
+  (begin
+    (asserts! (is-authorized) ERR-NOT-AUTHORIZED)
+    (ok (var-set liquidation-threshold new-threshold))
+  )
+)
+
+(define-public (update-liquidation-penalty (new-penalty uint))
+  (begin
+    (asserts! (is-authorized) ERR-NOT-AUTHORIZED)
+    (ok (var-set liquidation-penalty new-penalty))
+  )
+)
+
+(define-public (update-interest-rate (new-rate uint))
+  (begin
+    (asserts! (is-authorized) ERR-NOT-AUTHORIZED)
+    ;; Update global interest before changing the rate
+    (try! (update-global-interest))
+    (ok (var-set interest-rate-per-block new-rate))
+  )
+)
+
+(define-public (update-protocol-fee (new-fee uint))
+  (begin
+    (asserts! (is-authorized) ERR-NOT-AUTHORIZED)
+    (ok (var-set protocol-fee new-fee))
+  )
+)
+
+;; Oracle price getter with error handling
+(define-read-only (get-sbtc-price)
+  (let ((price-response (contract-call? (var-get oracle-contract) get-price)))
+    (match price-response
+      price (ok price)
+      error ERR-ORACLE-ERROR
+    )
+  )
+)
