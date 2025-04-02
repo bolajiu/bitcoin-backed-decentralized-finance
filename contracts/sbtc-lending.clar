@@ -91,7 +91,7 @@
     (var-set oracle-contract oracle-contract-address)
     (var-set dex-contract dex-contract-address)
     (var-set protocol-initialized true)
-    (var-set last-block-interest-calculated block-height)
+    (var-set last-block-interest-calculated stacks-block-height)
     
     (ok true)
   )
@@ -281,7 +281,7 @@
     (match current-loan
       loan 
       (let (
-        (blocks-elapsed (- block-height (get last-interest-block loan)))
+        (blocks-elapsed (- stacks-block-height (get last-interest-block loan)))
         (new-interest (calculate-interest (get borrowed-amount loan) (var-get interest-rate-per-block) blocks-elapsed))
         (updated-interest (+ (get interest-accumulated loan) new-interest))
       )
@@ -290,7 +290,7 @@
           {
             borrowed-amount: (get borrowed-amount loan),
             interest-accumulated: updated-interest,
-            last-interest-block: block-height,
+            last-interest-block: stacks-block-height,
             liquidated: (get liquidated loan)
           }
         )
@@ -304,7 +304,7 @@
 (define-public (update-global-interest)
   (begin
     (asserts! (var-get protocol-initialized) ERR-NOT-INITIALIZED)
-    (var-set last-block-interest-calculated block-height)
+    (var-set last-block-interest-calculated stacks-block-height)
     (ok true)
   )
 )
@@ -321,7 +321,7 @@
     
     (let (
       (current-collateral (default-to { amount: u0 } (map-get? user-collateral { user: tx-sender })))
-      (current-loan (default-to { borrowed-amount: u0, interest-accumulated: u0, last-interest-block: block-height, liquidated: false } 
+      (current-loan (default-to { borrowed-amount: u0, interest-accumulated: u0, last-interest-block: stacks-block-height, liquidated: false } 
                           (map-get? user-loans { user: tx-sender })))
       (price-response (try! (get-sbtc-price)))
     )
@@ -343,7 +343,7 @@
           {
             borrowed-amount: (+ (get borrowed-amount current-loan) amount),
             interest-accumulated: (get interest-accumulated current-loan),
-            last-interest-block: block-height,
+            last-interest-block: stacks-block-height,
             liquidated: false
           }
         )
@@ -395,7 +395,7 @@
               {
                 borrowed-amount: new-borrowed-amount,
                 interest-accumulated: new-interest-accumulated,
-                last-interest-block: block-height,
+                last-interest-block: stacks-block-height,
                 liquidated: false
               }
             )
@@ -491,7 +491,7 @@
                   {
                     borrowed-amount: u0,
                     interest-accumulated: u0,
-                    last-interest-block: block-height,
+                    last-interest-block: stacks-block-height,
                     liquidated: true
                   }
                 )
@@ -572,7 +572,7 @@
 )
 
 ;; Test helper function - only available in dev environments
-(define-public (set-block-height (new-height uint))
+(define-public (set-stacks-block-height (new-height uint))
   (begin
     (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-NOT-AUTHORIZED)
     (print (tuple (new-height new-height)))
