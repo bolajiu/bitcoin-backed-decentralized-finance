@@ -418,3 +418,106 @@
     )
   )
 )
+
+;; Liquidation functions
+(define-public (check-liquidation (user principal))
+  (begin
+    (asserts! (var-get protocol-initialized) ERR-NOT-INITIALIZED)
+    (asserts! (not (var-get protocol-paused)) ERR-PAUSED)
+    
+    ;; Update interest on the loan
+    (update-loan-interest user)
+    
+    (let (
+      (current-collateral (default-to { amount: u0 } (map-get? user-collateral { user: user })))
+      (current-loan (map-get? user-loans { user: user }))
+    )
+      (match current-loan
+        loan
+        (let (
+          (price-response (try! (get-sbtc-price)))
+          (collateral-value (* (get amount current-collateral) price-response))
+          (total-debt (+ (get borrowed-amount loan) (get interest-accumulated loan)))
+          (collateral-ratio (if (> total-debt u0)
+                              (/ (* collateral-value u100) total-debt)
+                              u0))
+        )
+          ;; Check if loan is liquidatable
+          (if (< collateral-ratio (var-get liquidation-threshold))
+            (ok true)  ;; Can be liquidated
+            (ok false)  ;; Cannot be liquidated
+          )
+        )
+        (ok false)  ;; No loan exists
+      )
+    )
+  )
+)
+
+(define-public (liquidate (user principal))
+  (begin
+    (asserts! (var-get protocol-initialized) ERR-NOT-INITIALIZED)
+    (asserts! (not (var-get protocol-paused)) ERR-PAUSED)
+    
+    ;; First check if the loan can be liquidated
+    (let ((can-liquidate (try! (check-liquidation user))))
+      (asserts! can-liquidate ERR-NOT-LIQUIDATABLE)
+      
+      (let (
+        (current-collateral (default-to { amount: u0 } (map-get? user-collateral { user: user })))
+        (current-loan (unwrap! (map-get? user-loans { user: user }) ERR-LOAN-DOES-NOT-EXIST))
+        (price-response (try! (get-sbtc-price)))
+        (total-debt (+ (get borrowed-amount current-loan) (get interest-accumulated current-loan)))
+      )
+        ;; Calculate liquidation amounts with penalty
+        (let (
+          (debt-with-penalty (/ (* total-debt (+ u100 (var-get liquidation-penalty))) u100))
+          (collateral-to-liquidate (get amount current-collateral))
+          (collateral-value (* collateral-to-liquidate price-response))
+        )
+          ;; Execute liquidation through DEX
+          (let (
+            (liquidation-result (as-contract (contract-call? (var-get dex-contract) sell-sbtc collateral-to-liquidate)))
+          )
+            (match liquidation-result
+              stablecoin-amount
+              (let (
+                (debt-repaid (if (> stablecoin-amount total-debt) total-debt stablecoin-amount))
+                (excess-stablecoin (- stablecoin-amount debt-repaid))
+              )
+                ;; Mark loan as liquidated
+                (map-set user-loans
+                  { user: user }
+                  {
+                    borrowed-amount: u0,
+                    interest-accumulated: u0,
+                    last-interest-block: block-height,
+                    liquidated: true
+                  }
+                )
+                
+                ;; Remove collateral
+                (map-set user-collateral { user: user } { amount: u0 })
+                
+                ;; Update total locked sBTC
+                (var-set total-sbtc-locked (- (var-get total-sbtc-locked) collateral-to-liquidate))
+                
+                ;; Update total borrowed
+                (var-set total-stablecoin-borrowed (- (var-get total-stablecoin-borrowed) (get borrowed-amount current-loan)))
+                
+                ;; Return excess stablecoin to the liquidated user if any
+                (if (> excess-stablecoin u0)
+                  (as-contract (contract-call? (var-get stablecoin-contract) transfer excess-stablecoin tx-sender user))
+                  true
+                )
+                
+                (ok true)
+              )
+              error (err error)
+            )
+          )
+        )
+      )
+    )
+  )
+)
