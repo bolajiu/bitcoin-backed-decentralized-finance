@@ -179,3 +179,89 @@
     )
   )
 )
+
+;; Collateral management
+(define-public (deposit-collateral (amount uint))
+  (begin
+    (asserts! (var-get protocol-initialized) ERR-NOT-INITIALIZED)
+    (asserts! (not (var-get protocol-paused)) ERR-PAUSED)
+    (asserts! (> amount u0) ERR-INVALID-AMOUNT)
+    
+    ;; Transfer sBTC from user to contract
+    (let ((transfer-result (contract-call? (var-get sbtc-contract) transfer amount tx-sender (as-contract tx-sender))))
+      (match transfer-result
+        success 
+        (let (
+          (current-collateral (default-to { amount: u0 } (map-get? user-collateral { user: tx-sender })))
+          (new-amount (+ (get amount current-collateral) amount))
+        )
+          ;; Update user's collateral
+          (map-set user-collateral { user: tx-sender } { amount: new-amount })
+          
+          ;; Update total locked sBTC
+          (var-set total-sbtc-locked (+ (var-get total-sbtc-locked) amount))
+          
+          (ok true)
+        )
+        error (err error)
+      )
+    )
+  )
+)
+
+(define-public (withdraw-collateral (amount uint))
+  (begin
+    (asserts! (var-get protocol-initialized) ERR-NOT-INITIALIZED)
+    (asserts! (not (var-get protocol-paused)) ERR-PAUSED)
+    (asserts! (> amount u0) ERR-INVALID-AMOUNT)
+    
+    (let (
+      (current-collateral (default-to { amount: u0 } (map-get? user-collateral { user: tx-sender })))
+      (current-loan (default-to { borrowed-amount: u0, interest-accumulated: u0, last-interest-block: u0, liquidated: false } 
+                            (map-get? user-loans { user: tx-sender })))
+    )
+      ;; Check if user has enough collateral
+      (asserts! (>= (get amount current-collateral) amount) ERR-INSUFFICIENT-BALANCE)
+      
+      ;; Calculate updated collateral
+      (let ((new-collateral-amount (- (get amount current-collateral) amount)))
+        
+        ;; If there's an outstanding loan, check if collateral ratio remains sufficient
+        (if (> (+ (get borrowed-amount current-loan) (get interest-accumulated current-loan)) u0)
+          (let (
+            (price-response (try! (get-sbtc-price)))
+            (collateral-value-after-withdrawal (* new-collateral-amount price-response))
+            (total-debt (+ (get borrowed-amount current-loan) (get interest-accumulated current-loan)))
+            (collateral-ratio (if (> total-debt u0)
+                                 (/ (* collateral-value-after-withdrawal u100) total-debt)
+                                 u0))
+          )
+            ;; Ensure collateral ratio stays above minimum
+            (asserts! (>= collateral-ratio (var-get minimum-collateral-ratio)) ERR-COLLATERAL-RATIO-TOO-LOW)
+            
+            ;; Update user's collateral if check passes
+            (map-set user-collateral { user: tx-sender } { amount: new-collateral-amount })
+            
+            ;; Update total locked sBTC
+            (var-set total-sbtc-locked (- (var-get total-sbtc-locked) amount))
+            
+            ;; Transfer sBTC from contract to user
+            (as-contract 
+              (contract-call? (var-get sbtc-contract) transfer amount tx-sender tx-sender)
+            )
+          )
+          (begin
+            ;; No loan, simply withdraw
+            (map-set user-collateral { user: tx-sender } { amount: new-collateral-amount })
+            (var-set total-sbtc-locked (- (var-get total-sbtc-locked) amount))
+            
+            ;; Transfer sBTC from contract to user
+            (as-contract 
+              (contract-call? (var-get sbtc-contract) transfer amount tx-sender tx-sender)
+            )
+          )
+        )
+      )
+    )
+  )
+)
